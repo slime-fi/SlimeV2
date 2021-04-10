@@ -1,4 +1,4 @@
- pragma solidity 0.6.12;
+pragma solidity 0.6.12;
 
 import '../libs/SafeMath.sol';
 import '../libs/IBEP20.sol';
@@ -114,6 +114,8 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
 
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event MassHarvestStake(uint256[] poolsId,bool withStake,uint256 extraStake);
+    event InternalDeposit(address indexed user, uint256 indexed pid, uint256 amount);
     event DepositFor(address indexed user,address indexed userTo, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -210,7 +212,6 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     }
 
 
-
     // View function to see pending tokens on frontend.
     function pendingReward(uint256 _pid, address _user) validatePoolByPid(_pid)  external view returns (uint256) {
         PoolInfo storage pool = poolInfo[_pid];
@@ -218,8 +219,8 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         uint256 accslimePerShare = pool.accslimePerShare;
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 slimeReward = slimesPerBlock.mul(pool.allocPoint).div(totalAllocPoint);
-
+            uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+            uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
             accslimePerShare = accslimePerShare.add(slimeReward.mul(1e12).div(lpSupply));
         }
@@ -246,8 +247,9 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             pool.lastRewardBlock = block.number;
             return;
         }
+        uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+        uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
-        uint256 slimeReward = slimesPerBlock.mul(pool.allocPoint).div(totalAllocPoint);
          st.mint(address(this), slimeReward);
          //treasury and dev
          st.mint(divPoolAddress, slimeReward.mul(fees[1]).div(1000));
@@ -256,7 +258,25 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         pool.accslimePerShare = pool.accslimePerShare.add(slimeReward.mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
     }
+     // Update reward variables of the given pool to be up-to-date. Internal function used for massHarvestStake for gas optimization
+     function internalUpdatePool(uint256 _pid) internal returns(uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        if (block.number <= pool.lastRewardBlock) {
+            return 0;
+        }
+        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
+        if (lpSupply == 0) {
+            pool.lastRewardBlock = block.number;
+            return 0;
+        }
+        uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+        uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
+
+        pool.accslimePerShare = pool.accslimePerShare.add(slimeReward.mul(1e12).div(lpSupply));
+        pool.lastRewardBlock = block.number;
+        return slimeReward;
+    }
     /**
     ** Harvest all pools where user has pending balance at same time!  Be careful of gas spending!
     ** ids[] list of pools id to harvest, [0] to harvest all
@@ -272,12 +292,13 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
               idxlength =  poolInfo.length;
 
         uint256 totalPending = 0;
+        uint256 accumulatedSlimeReward=0;
 
           for (uint256 i = 0; i < idxlength;  i++) {
                    uint256 pid = zeroLenght ? i :  ids[i];
                    require (pid < poolLength(),"Pool does not exist");
-
-                    updatePool(pid);
+                    // updated updatePool to gas optimization
+                    accumulatedSlimeReward = accumulatedSlimeReward.add(internalUpdatePool(pid));
 
                    PoolInfo storage pool = poolInfo[pid];
                    UserInfo storage user = userInfo[pid][msg.sender];
@@ -288,22 +309,60 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
                    user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
             }
 
+            st.mint(address(this), accumulatedSlimeReward);
+            st.mint(divPoolAddress, accumulatedSlimeReward.mul(fees[1]).div(1000));
+            st.mint(devaddr, accumulatedSlimeReward.mul(fees[2]).div(1000));
+
             if(totalPending>0)
             {
                 payRefFees(totalPending);
-                safeStransfer(msg.sender, totalPending);
+                uint256 totalHarvested = deflacionaryHarvest(st,msg.sender,totalPending);
                 emit RewardPaid(msg.sender, totalPending);
+
+                if( stake && stakepoolId!=0)
+                {
+                     if(extraStake>0)
+                      totalHarvested = totalHarvested.add(extraStake);
+
+                     internalDeposit(stakepoolId, totalHarvested);
+                }
             }
-
-            if(totalPending>0 && stake && stakepoolId!=0)
-            {
-             if(extraStake>0)
-              totalPending = totalPending.add(extraStake);
-
-              deposit(stakepoolId, totalPending, address(0));
-            }
-
+        emit MassHarvestStake(ids,stake,extraStake);
     }
+    /**
+     * Avoid nonReentrant only for massHarvestStake autoStake method, removed updatePool && pending payment
+     *
+     */
+    function internalDeposit(uint256 _pid, uint256 _amount) internal {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+
+
+        if (_amount > 0) {
+            //check for deflacionary assets
+            _amount = deflacionaryDeposit(pool.lpToken,_amount);
+
+           if(pool.fee > 0){
+
+                uint256  treasuryfee = _amount.mul(pool.fee).mul(fees[3]).div(100000);
+                uint256 devfee = _amount.mul(pool.fee).mul(fees[4]).div(100000);
+
+                 if(treasuryfee>0)
+                    pool.lpToken.safeTransfer(divPoolAddress, treasuryfee);
+                if(devfee>0)
+                    pool.lpToken.safeTransfer(devaddr, devfee);
+
+                user.amount = user.amount.add(_amount).sub(treasuryfee).sub(devfee);
+            }else{
+                user.amount = user.amount.add(_amount);
+            }
+
+        }
+        user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
+
+        emit InternalDeposit(msg.sender, _pid, _amount);
+    }
+
     /**
     * Allow 3* part aplication do deposit for a user just when user (tx.origin) use them and "tx.origin" must be equals "to" for security (unauthorized actions)  , deposit amount is requested to msg.sender
      */
@@ -398,6 +457,10 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         emit Deposit(msg.sender, _pid, _amount);
     }
 
+    /**
+     *  send deposit and check the final amount deposited by a user and if deflation occurs update amount
+     *
+     */
     function deflacionaryDeposit(IBEP20 token ,uint256 _amount)  internal returns(uint256)
     {
 
@@ -409,6 +472,20 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         return _amount;
     }
 
+    /**
+     *  Pay harvest and check the final amount harvested by a user and if deflation occurs update amount * used by massHarvestStake
+     *
+     */
+    function deflacionaryHarvest(IBEP20 token ,address to, uint256 _amount)  internal returns(uint256)
+    {
+
+        uint256 balanceBeforeHarvest = token.balanceOf(to);
+         safeStransfer(to, _amount);
+        uint256 balanceAfterHarvest = token.balanceOf(to);
+        _amount = balanceAfterHarvest.sub(balanceBeforeHarvest);
+
+        return _amount;
+    }
 
     // Withdraw LP tokens from MasterChef.
     function withdraw(uint256 _pid, uint256 _amount) external nonReentrant validatePoolByPid(_pid) {

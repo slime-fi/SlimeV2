@@ -21,6 +21,8 @@ contract DeflationController is Ownable {
    event SetRule(address indexed _address,uint256 _senderFee,uint256 _callerFee,uint256 _recipientFee);
    event SetRuleStatus(address indexed _address,bool _status);
    event EmergencyBEP20Drain(address token , address owner, uint256 amount);
+   event SetEoaFee(uint256 eoaFee);
+   event SetDefFee(uint256 defFee);
 
 
    //Static deflation rule
@@ -62,12 +64,12 @@ contract DeflationController is Ownable {
         }
 
         //normal transfer and transferFrom from eoa (called directly)
-        if(origin==caller && eoaFee>0 && !callerRule.active && !recipientRule.active && !fromRule.active)
+        if( burnAmount==0 && origin==caller && eoaFee>0 && !callerRule.active && !recipientRule.active && !fromRule.active)
         {
             burnAmount = burnAmount.add(amount.mul(eoaFee).div(10000));
 
         //no burn because no rules on that tx, setUp default burn
-        }else if(origin!=caller && burnAmount==0 &&   defFee>0 && !callerRule.active && !recipientRule.active && !fromRule.active)
+        }else if(burnAmount==0 && origin!=caller &&    defFee>0 && !callerRule.active && !recipientRule.active && !fromRule.active)
         {
             burnAmount = burnAmount.add(amount.mul(defFee).div(10000));
         }
@@ -97,6 +99,21 @@ contract DeflationController is Ownable {
          emit SetRuleStatus(_address,_active);
 
     }
+
+
+   function setEoaFee(uint256 _eoaFee) external onlyOwner
+   {
+        require(_eoaFee<=MAX_DEFLATION_ALLOWED);
+        eoaFee = _eoaFee;
+        emit SetEoaFee(_eoaFee);
+   }
+
+    function setDefFee(uint256 _defFee) external onlyOwner
+   {
+       require(_defFee<=MAX_DEFLATION_ALLOWED);
+        defFee = _defFee;
+        emit SetDefFee(_defFee);
+   }
 
     // owner can drain tokens that are sent here by mistake
     function emergencyBEP20Drain(BEP20 token, uint amount) external onlyOwner {

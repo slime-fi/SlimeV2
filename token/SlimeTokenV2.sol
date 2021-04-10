@@ -1,20 +1,21 @@
 /**
- * @title SlimeTokenV2
+ * @title SlimeToken V2
  */
 
 
 pragma solidity 0.6.12;
 
-import '../libs/SafeMath.sol';
-import '../libs/BEP20.sol';
+import './SafeMath.sol';
+import './IBEP20.sol';
+import './BEP20Token.sol';
 
 
 interface DeflationController{
-    function checkDeflation(address origin,address caller,address from,address recipient, uint256 amount) external view returns (uint256);
+    function checkDeflation(address origin,address caller,address from,address recipient, uint256 amount) external view returns (uint256) ;
 }
 
-// SLIMEToken with Governance.
-contract SlimeTokenV2 is BEP20('Slime V2', 'SLIMEV2') {
+// SLIMEV2
+contract SlimeTokenV2 is BEP20('Slime V2', 'SLIME') {
   using SafeMath for uint256;
 
    mapping (address => bool ) public minters;
