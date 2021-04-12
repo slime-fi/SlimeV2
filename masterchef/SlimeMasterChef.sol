@@ -227,7 +227,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     /**
      * Check if address used previus masterchef pool to avoid pay fee again
      */
-    function isWhiteListed (uint256 _pid,address _address) public view returns (bool) {
+    function isUserWhiteListed (uint256 _pid,address _address) public view returns (bool) {
         if(buggyOldChef==address(0) || enableWhitelistFee==false)
             return false;
 
@@ -418,7 +418,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             //check for deflacionary assets
             _amount = deflacionaryDeposit(pool.lpToken,_amount);
 
-           bool isWhiteListed = isWhiteListed(_pid, to);
+           bool isWhiteListed = isUserWhiteListed(_pid, to);
            if(isWhiteListed==false && pool.fee > 0){
 
                 uint256  treasuryfee = _amount.mul(pool.fee).mul(fees[3]).div(100000);
@@ -465,7 +465,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             //check for deflacionary assets
             _amount = deflacionaryDeposit(pool.lpToken,_amount);
 
-           bool isWhiteListed = isWhiteListed(_pid, msg.sender);
+           bool isWhiteListed = isUserWhiteListed(_pid, msg.sender);
            if(isWhiteListed==false && pool.fee > 0){
 
                 uint256  treasuryfee = _amount.mul(pool.fee).mul(fees[3]).div(100000);
