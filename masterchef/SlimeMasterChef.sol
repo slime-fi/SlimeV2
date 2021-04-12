@@ -12,6 +12,11 @@ interface SlimeFriends {
     function getSlimeFriend(address farmer) external view returns (address);
 }
 
+//  Non fee users that use previus buggy chef
+interface BuggyOldMasterChef {
+   function userInfo(uint256 _pid, address user) external view returns(uint256,uint256);
+}
+
  contract IRewardDistributionRecipient is Ownable {
     address public rewardReferral;
     address public rewardVote;
@@ -20,7 +25,6 @@ interface SlimeFriends {
     function setRewardReferral(address _rewardReferral) external onlyOwner {
         rewardReferral = _rewardReferral;
     }
-
 }
 /**
  * @dev Implementation of the {IBEP20} interface.
@@ -103,12 +107,17 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     // The block number when This   mining starts.
     uint256 public startBlock;
 
+    uint256 public constant BONUS_MULTIPLIER = 1;
 
     uint256[5] public fees;
 
     uint256 public constant MAX_FEE_ALLOWED = 100; //10%
 
     uint256 public stakepoolId = 0;
+
+    bool public enableWhitelistFee = true;
+
+    address public buggyOldChef = address(0x2Ee13A83aca66A218d2e4C6A5b3FCC299aB1e5e6);
 
     mapping(address => bool ) public trustedAddress;
 
@@ -211,6 +220,23 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             poolInfo[_pid].fee = __fee;
     }
 
+    function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
+        return _to.sub(_from).mul(BONUS_MULTIPLIER);
+    }
+
+    /**
+     * Check if address used previus masterchef pool to avoid pay fee again
+     */
+    function isWhiteListed (uint256 _pid,address _address) public view returns (bool) {
+        if(buggyOldChef==address(0) || enableWhitelistFee==false)
+            return false;
+
+       (uint256 amount,uint256 rewardDebt) = BuggyOldMasterChef(buggyOldChef).userInfo(_pid, _address);
+        if(rewardDebt>0){
+            return true;
+        }
+        return false;
+    }
 
     // View function to see pending tokens on frontend.
     function pendingReward(uint256 _pid, address _user) validatePoolByPid(_pid)  external view returns (uint256) {
@@ -219,7 +245,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         uint256 accslimePerShare = pool.accslimePerShare;
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+            uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
             uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
             accslimePerShare = accslimePerShare.add(slimeReward.mul(1e12).div(lpSupply));
@@ -247,7 +273,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             pool.lastRewardBlock = block.number;
             return;
         }
-        uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
          st.mint(address(this), slimeReward);
@@ -258,6 +284,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         pool.accslimePerShare = pool.accslimePerShare.add(slimeReward.mul(1e12).div(lpSupply));
         pool.lastRewardBlock = block.number;
     }
+
      // Update reward variables of the given pool to be up-to-date. Internal function used for massHarvestStake for gas optimization
      function internalUpdatePool(uint256 _pid) internal returns(uint256) {
         PoolInfo storage pool = poolInfo[_pid];
@@ -269,7 +296,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             pool.lastRewardBlock = block.number;
             return 0;
         }
-        uint256 multiplier = (block.number).sub(pool.lastRewardBlock);
+        uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 slimeReward = multiplier.mul(slimesPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
 
 
@@ -289,10 +316,10 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
 
         //if empty check all
         if(zeroLenght)
-              idxlength =  poolInfo.length;
+              idxlength = poolInfo.length;
 
         uint256 totalPending = 0;
-        uint256 accumulatedSlimeReward=0;
+        uint256 accumulatedSlimeReward = 0;
 
           for (uint256 i = 0; i < idxlength;  i++) {
                    uint256 pid = zeroLenght ? i :  ids[i];
@@ -304,7 +331,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
                    UserInfo storage user = userInfo[pid][msg.sender];
                    uint256 pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
                    if(pending > 0) {
-                       totalPending=totalPending.add(pending);
+                       totalPending = totalPending.add(pending);
                     }
                    user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
             }
@@ -329,6 +356,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             }
         emit MassHarvestStake(ids,stake,extraStake);
     }
+
     /**
      * Avoid nonReentrant only for massHarvestStake autoStake method, removed updatePool && pending payment
      *
@@ -390,7 +418,8 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             //check for deflacionary assets
             _amount = deflacionaryDeposit(pool.lpToken,_amount);
 
-           if(pool.fee > 0){
+           bool isWhiteListed = isWhiteListed(_pid, to);
+           if(isWhiteListed==false && pool.fee > 0){
 
                 uint256  treasuryfee = _amount.mul(pool.fee).mul(fees[3]).div(100000);
                 uint256 devfee = _amount.mul(pool.fee).mul(fees[4]).div(100000);
@@ -436,7 +465,8 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
             //check for deflacionary assets
             _amount = deflacionaryDeposit(pool.lpToken,_amount);
 
-           if(pool.fee > 0){
+           bool isWhiteListed = isWhiteListed(_pid, msg.sender);
+           if(isWhiteListed==false && pool.fee > 0){
 
                 uint256  treasuryfee = _amount.mul(pool.fee).mul(fees[3]).div(100000);
                 uint256 devfee = _amount.mul(pool.fee).mul(fees[4]).div(100000);
@@ -456,6 +486,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
 
         emit Deposit(msg.sender, _pid, _amount);
     }
+
 
     /**
      *  send deposit and check the final amount deposited by a user and if deflation occurs update amount
@@ -498,7 +529,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         updatePool(_pid);
 
         uint256 pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
-        user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
+
 
         if(pending > 0) {
             safeStransfer(msg.sender, pending);
@@ -511,6 +542,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
               pool.lpToken.safeTransfer(address(msg.sender), _amount);
           }
 
+        user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
@@ -535,11 +567,11 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     function emergencyWithdraw(uint256 _pid) external nonReentrant validatePoolByPid(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
+        uint256 amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
-
-        pool.lpToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        pool.lpToken.safeTransfer(address(msg.sender), amount);
+        emit EmergencyWithdraw(msg.sender, _pid,amount);
 
     }
 
@@ -584,7 +616,15 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         emit UpdateTrustedAddress(_address,state);
     }
 
+     function updateEnableWhitelistFee( bool state) external onlyOwner
+    {
+        enableWhitelistFee = state;
+    }
 
+     function updateWhitelistChefAddress( address _chefAddress) external onlyOwner
+    {
+        buggyOldChef = _chefAddress;
+    }
     //set what will be the stake pool
     function setStakePoolId(uint256 _id)  external onlyOwner  {
 
