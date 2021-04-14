@@ -102,6 +102,10 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     PoolInfo[] public poolInfo;
     // Info of each user that stakes LP tokens.
     mapping (uint256 => mapping (address => UserInfo)) public userInfo;
+    
+    // control just no fee for first deposit on whitelisted users, if true == fee for next deposit
+    mapping (uint256 => mapping (address => bool)) public userDeposited;
+    
     // Total allocation poitns. Must be the sum of all allocation points in all pools.
     uint256 public totalAllocPoint = 0;
     // The block number when This   mining starts.
@@ -228,7 +232,7 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
      * Check if address used previus masterchef pool to avoid pay fee again
      */
     function isUserWhiteListed (uint256 _pid,address _address) public view returns (bool) {
-        if(buggyOldChef==address(0) || enableWhitelistFee==false)
+        if(buggyOldChef==address(0) || enableWhitelistFee==false || userDeposited[_pid][_address]==true)
             return false;
 
        (uint256 amount,uint256 rewardDebt) = BuggyOldMasterChef(buggyOldChef).userInfo(_pid, _address);
@@ -365,7 +369,17 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
 
+        internalUpdatePool(_pid);
+        
+        if (user.amount > 0) {
+            uint256  pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
 
+               if(pending > 0) {
+                    payRefFees(pending);
+                    safeStransfer(msg.sender, pending);
+                    emit RewardPaid(msg.sender, pending);
+                }
+        }
         if (_amount > 0) {
             //check for deflacionary assets
             _amount = deflacionaryDeposit(pool.lpToken,_amount);
@@ -399,13 +413,12 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
 
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][to];
-
-        uint256 pending = 0;
+ 
 
         updatePool(_pid);
 
         if (user.amount > 0) {
-              pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
+             uint256 pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
 
                if(pending > 0) {
                     payRefFees(pending);
@@ -430,9 +443,12 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
                     pool.lpToken.safeTransfer(devaddr, devfee);
 
                 user.amount = user.amount.add(_amount).sub(treasuryfee).sub(devfee);
+                userDeposited[_pid][to] = true; 
             }else{
                 user.amount = user.amount.add(_amount);
             }
+            
+             
 
         }
         user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
@@ -443,16 +459,14 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
     function deposit(uint256 _pid, uint256 _amount,address referrer) public nonReentrant validatePoolByPid(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-
-        uint256 pending = 0;
-
+ 
         updatePool(_pid);
          if (_amount>0 && rewardReferral != address(0) && referrer != address(0)) {
             SlimeFriends(rewardReferral).setSlimeFriend (msg.sender, referrer);
         }
 
         if (user.amount > 0) {
-              pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
+            uint256  pending = user.amount.mul(pool.accslimePerShare).div(1e12).sub(user.rewardDebt);
 
                if(pending > 0) {
                     payRefFees(pending);
@@ -477,9 +491,12 @@ contract SlimeMasterChefV2   is IRewardDistributionRecipient , ReentrancyGuard {
                     pool.lpToken.safeTransfer(devaddr, devfee);
 
                 user.amount = user.amount.add(_amount).sub(treasuryfee).sub(devfee);
+                userDeposited[_pid][msg.sender] = true;   
             }else{
                 user.amount = user.amount.add(_amount);
             }
+            
+            
 
         }
         user.rewardDebt = user.amount.mul(pool.accslimePerShare).div(1e12);
